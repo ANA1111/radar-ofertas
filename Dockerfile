@@ -2,11 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY app.py monitor.py /app/
+COPY app.py monitor.py shopee_import.py /app/
 COPY samples/ /app/samples/
 
 RUN useradd --create-home --uid 10001 radar \
-    && chmod 644 /app/app.py /app/monitor.py \
+    && chmod 644 /app/app.py /app/monitor.py /app/shopee_import.py \
     && chmod -R a+rX /app/samples
 
 USER radar
