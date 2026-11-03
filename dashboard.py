@@ -176,10 +176,27 @@ class Handler(BaseHTTPRequestHandler):
             return
         expected = urlsplit(public_origin)
         actual = urlsplit(origin)
-        if (expected.scheme != "https" or expected.hostname != "ofertas.gestoncuid.tech"
-                or actual.scheme != "https" or actual.netloc.lower() != expected.netloc.lower()):
-            # Loga apenas informações públicas de diagnóstico, nunca senha/cookie.
-            print("ORIGIN_CHECK_REJECTED", "origin="+repr(origin),
+        referer = urlsplit((self.headers.get("Referer") or "").strip())
+        fetch_site = (self.headers.get("Sec-Fetch-Site") or "").lower().strip()
+        expected_ok = (expected.scheme == "https"
+                       and expected.hostname == "ofertas.gestoncuid.tech"
+                       and expected.path in ("", "/"))
+        origin_ok = (actual.scheme == "https"
+                     and actual.netloc.lower() == expected.netloc.lower())
+        # Alguns navegadores enviam Origin: null por políticas de privacidade.
+        # Só aceitar esse caso se Referer HTTPS E Fetch Metadata confirmarem
+        # uma navegação same-origin; nunca confiar apenas em Origin: null.
+        null_origin_same_site = (
+            origin == "null"
+            and fetch_site == "same-origin"
+            and referer.scheme == "https"
+            and referer.netloc.lower() == expected.netloc.lower()
+        )
+        if not (expected_ok and (origin_ok or null_origin_same_site)):
+            print("ORIGIN_CHECK_REJECTED",
+                  "origin="+repr(origin),
+                  "fetch_site="+repr(fetch_site),
+                  "referer_host="+repr(referer.netloc),
                   "configured="+repr(public_origin), flush=True)
             self.respond(403, "Origem não permitida")
             return
