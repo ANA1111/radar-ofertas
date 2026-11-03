@@ -35,7 +35,7 @@ table{width:100%;border-collapse:collapse;text-align:left}th,td{padding:14px 10p
 button{background:var(--accent);color:#08231f;border:0;border-radius:10px;padding:12px 18px;font-weight:750;cursor:pointer}
 input{width:100%;padding:13px;background:#0b1422;border:1px solid #40516a;border-radius:10px;color:white;font:inherit;margin:8px 0 18px}
 .login{max-width:430px;margin:10vh auto;padding:32px}.error{color:#ff9eab}.notice{border:1px solid #446175;padding:14px;border-radius:12px;color:#b6cce0}
-.logout{background:transparent;border:1px solid #52627c;color:white;padding:9px 13px}
+.reject{background:#743543;color:#fff}.reject:hover{background:#943d50}form input[type=hidden]{display:none}.logout{background:transparent;border:1px solid #52627c;color:white;padding:9px 13px}
 @media(max-width:850px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:520px){.grid{grid-template-columns:1fr 1fr;gap:9px}.card{padding:15px}.kpi{font-size:25px}.wrap{padding:18px 12px}h1{font-size:24px}th,td{padding:12px 8px}}
 """
 
@@ -91,7 +91,7 @@ def manual_db():
 def manual_list():
     con = manual_db()
     try:
-        return con.execute("SELECT title,affiliate_url,price_cents,commission_percent,sub_id,status FROM manual_offers ORDER BY id DESC LIMIT 50").fetchall()
+        return con.execute("SELECT id,title,affiliate_url,price_cents,commission_percent,sub_id,status FROM manual_offers ORDER BY id DESC LIMIT 50").fetchall()
     finally:
         con.close()
 
@@ -177,9 +177,20 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             manual = manual_list()
-            manual_rows = "".join("<tr><td>"+esc(t)+"</td><td>"+money(p)+"</td><td>"+esc(c or "—")+"</td><td>"+esc(sub or "—")+"</td><td>"+esc(st)+"</td><td><a target='_blank' rel='noopener noreferrer' href='"+esc(u)+"'>Abrir</a></td></tr>" for t,u,p,c,sub,st in manual)
+            manual_rows = "".join(
+                "<tr><td>"+esc(t)+"</td><td>"+money(p)+"</td><td>"+esc(c or "—")+
+                "</td><td>"+esc(sub or "—")+"</td><td>"+esc(st)+
+                "</td><td><a target='_blank' rel='noopener noreferrer' href='"+esc(u)+
+                "'>Abrir</a></td><td>"+
+                ("<form method='post' action='/review' style='display:flex;gap:6px;flex-wrap:wrap'>"
+                 "<input type='hidden' name='offer_id' value='"+esc(oid)+"'>"
+                 "<button type='submit' name='decision' value='approved'>Aprovar</button>"
+                 "<button class='reject' type='submit' name='decision' value='rejected'>Rejeitar</button>"
+                 "</form>" if st == "pending_review" else "<span class='muted'>Revisado</span>")+
+                "</td></tr>"
+                for oid,t,u,p,c,sub,st in manual)
         except sqlite3.Error:
-            manual_rows = "<tr><td colspan='6'>Banco manual indisponível. Verifique o volume /data.</td></tr>"
+            manual_rows = "<tr><td colspan='7'>Banco manual indisponível. Verifique o volume /data.</td></tr>"
         if not manual_rows:
             manual_rows = "<tr><td colspan='6'>Nenhuma oferta manual cadastrada.</td></tr>"
         form_html = """<section class='card section'><h2>Cadastrar oferta Shopee</h2>
@@ -191,7 +202,7 @@ class Handler(BaseHTTPRequestHandler):
         <label>Comissão exibida (%)<input name='commission' placeholder='28'></label>
         <label>Sub ID<input name='sub_id' maxlength='60' placeholder='radarofertas'></label>
         <button type='submit'>Salvar para revisão</button></form></section>"""
-        manual_html = "<section class='card section'><h2>Ofertas cadastradas manualmente</h2><div class='scroll'><table><thead><tr><th>Produto</th><th>Preço</th><th>Comissão %</th><th>Sub ID</th><th>Status</th><th>Link</th></tr></thead><tbody>"+manual_rows+"</tbody></table></div></section>"
+        manual_html = "<section class='card section'><h2>Ofertas cadastradas manualmente</h2><div class='scroll'><table><thead><tr><th>Produto</th><th>Preço</th><th>Comissão %</th><th>Sub ID</th><th>Status</th><th>Link</th><th>Ações</th></tr></thead><tbody>"+manual_rows+"</tbody></table></div></section>"
         metrics = [("Produtos monitorados",products),("Leituras registradas",history),("Aguardando revisão",pending),("Oportunidades detectadas",candidates)]
         cards = "".join("<div class='card'><div class='muted'>" + esc(k) + "</div><div class='kpi'>" + esc(v) + "</div></div>" for k,v in metrics)
         rows = "".join("<tr><td>" + esc(title) + "</td><td>" + money(price) + "</td><td>" +
@@ -211,7 +222,7 @@ class Handler(BaseHTTPRequestHandler):
         self.respond(200, layout(body))
 
     def do_POST(self):
-        if self.path not in ("/login","/logout","/offers"):
+        if self.path not in ("/login","/logout","/offers","/review"):
             self.respond(404, "Página não encontrada")
             return
         # Compare com a origem HTTPS pública configurada, não com o Host interno do proxy.
@@ -250,6 +261,38 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/logout":
             self.redirect("/", COOKIE_NAME + "=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict")
+            return
+
+        if self.path == "/review":
+            if not authenticated(self.headers.get("Cookie")):
+                self.respond(401, "Faça login novamente")
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 1 <= length <= 256:
+                    raise ValueError("Requisição inválida")
+                form = parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
+                raw_id = form.get("offer_id", [""])[0]
+                decision = form.get("decision", [""])[0]
+                if not raw_id.isdecimal() or not 1 <= int(raw_id) <= 9223372036854775807 or decision not in ("approved", "rejected"):
+                    raise ValueError("Decisão inválida")
+                con = manual_db()
+                try:
+                    cursor = con.execute("UPDATE manual_offers SET status=? WHERE id=? AND status='pending_review'", (decision, int(raw_id)))
+                    con.commit()
+                    changed = cursor.rowcount
+                finally:
+                    con.close()
+                if not changed:
+                    self.respond(409, layout("<main class='wrap'><h2>Oferta já revisada ou inexistente</h2><a href='/'>Voltar</a></main>"))
+                    return
+            except (ValueError, UnicodeDecodeError):
+                self.respond(400, "Requisição de revisão inválida")
+                return
+            except sqlite3.Error:
+                self.respond(503, "Banco indisponível para revisão")
+                return
+            self.redirect("/")
             return
 
         if self.path == "/offers":
