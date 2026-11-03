@@ -169,7 +169,11 @@ class Handler(BaseHTTPRequestHandler):
         # Bloqueia requisições de origem cruzada; proxy deve preservar Host.
         origin = self.headers.get("Origin")
         host = self.headers.get("Host", "")
-        # PUBLIC_ORIGIN define a origem externa confiável atrás do proxy HTTPS.\n        # Nunca confiar em X-Forwarded-Host fornecido por clientes.\n        public_origin = os.environ.get("DASHBOARD_PUBLIC_ORIGIN", "").rstrip("/")\n        expected_origin = public_origin or ("https://" + host)\n        if origin and origin != expected_origin:
+        # PUBLIC_ORIGIN define a origem externa confiável atrás do proxy HTTPS.
+        # Nunca confiar em X-Forwarded-Host fornecido por clientes.
+        public_origin = os.environ.get("DASHBOARD_PUBLIC_ORIGIN", "").rstrip("/")
+        expected_origin = public_origin or ("https://" + host)
+        if origin and origin != expected_origin:
             self.respond(403, "Origem não permitida")
             return
         if self.path == "/logout":
