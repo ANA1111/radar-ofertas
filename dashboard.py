@@ -102,6 +102,14 @@ def parse_price(raw):
         raise ValueError("Preço inválido")
     return int(value * 100)
 
+def offer_description(title, url, cents):
+    return ("📡 ACHADINHO DO RADAR DE OFERTAS!\\n\\n"
+            "🛍️ " + title + "\\n"
+            "💰 Preço observado: " + money(cents) + "\\n\\n"
+            "🔗 Confira: " + url + "\\n\\n"
+            "⚠️ Preço e disponibilidade podem mudar. Confira na Shopee.\\n"
+            "ℹ️ Link de afiliada: podemos receber comissão por compras qualificadas.")
+
 def stats():
     # SQLite URI mode=ro garante que o painel nunca altere o banco.
     con = sqlite3.connect("file:" + DB + "?mode=ro", uri=True, timeout=2)
@@ -161,6 +169,33 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self.respond(200, "OK")
             return
+        if self.path.startswith("/description?"):
+            if not authenticated(self.headers.get("Cookie")):
+                self.login()
+                return
+            try:
+                query = parse_qs(urlsplit(self.path).query)
+                raw_id = query.get("id", [""])[0]
+                if not raw_id.isdecimal() or not 1 <= int(raw_id) <= 9223372036854775807:
+                    raise ValueError("ID inválido")
+                con = manual_db()
+                try:
+                    offer = con.execute("SELECT title,affiliate_url,price_cents FROM manual_offers WHERE id=?", (int(raw_id),)).fetchone()
+                finally:
+                    con.close()
+                if not offer:
+                    self.respond(404, "Oferta não encontrada")
+                    return
+                message = offer_description(*offer)
+                body = ("<main class='wrap'><h1>Descrição sugerida</h1><p class='muted'>"
+                        "Revise os dados antes de divulgar. Nenhum envio é realizado.</p>"
+                        "<div class='card'><textarea readonly rows='12' style='width:100%;background:#0b1422;color:white;padding:14px;border:1px solid #40516a;border-radius:10px;font:inherit'>"
+                        + esc(message) + "</textarea><p>Selecione e copie o texto para usar.</p>"
+                        "<a href='/'>Voltar ao painel</a></div></main>")
+                self.respond(200, layout(body))
+            except (ValueError, sqlite3.Error):
+                self.respond(400, "Não foi possível gerar a descrição")
+            return
         if self.path != "/":
             self.respond(404, "Página não encontrada")
             return
@@ -181,7 +216,7 @@ class Handler(BaseHTTPRequestHandler):
                 "<tr><td>"+esc(t)+"</td><td>"+money(p)+"</td><td>"+esc(c or "—")+
                 "</td><td>"+esc(sub or "—")+"</td><td>"+esc(st)+
                 "</td><td><a target='_blank' rel='noopener noreferrer' href='"+esc(u)+
-                "'>Abrir</a></td><td>"+
+                "'>Abrir</a> · <a href='/description?id="+esc(oid)+"'>Gerar descrição</a></td><td>"+
                 ("<form method='post' action='/review' style='display:flex;gap:6px;flex-wrap:wrap'>"
                  "<input type='hidden' name='offer_id' value='"+esc(oid)+"'>"
                  "<button type='submit' name='decision' value='approved'>Aprovar</button>"
@@ -192,7 +227,7 @@ class Handler(BaseHTTPRequestHandler):
         except sqlite3.Error:
             manual_rows = "<tr><td colspan='7'>Banco manual indisponível. Verifique o volume /data.</td></tr>"
         if not manual_rows:
-            manual_rows = "<tr><td colspan='6'>Nenhuma oferta manual cadastrada.</td></tr>"
+            manual_rows = "<tr><td colspan='7'>Nenhuma oferta manual cadastrada.</td></tr>"
         form_html = """<section class='card section'><h2>Cadastrar oferta Shopee</h2>
         <p class='muted'>Cadastro manual, sem publicação automática.</p>
         <form method='post' action='/offers'>
