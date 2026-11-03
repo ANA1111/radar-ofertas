@@ -11,6 +11,8 @@ import os
 import secrets
 import sqlite3
 import time
+import urllib.request
+import urllib.error
 from collections import defaultdict
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -110,6 +112,20 @@ def offer_description(title, url, cents):
             "⚠️ Preço e disponibilidade podem mudar. Confira na Shopee.\\n"
             "ℹ️ Link de afiliada: podemos receber comissão por compras qualificadas.")
 
+def send_test_message(message):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.environ.get("TELEGRAM_TEST_CHAT_ID", "").strip()
+    if not token or not re.fullmatch(r"-100[0-9]{8,18}", chat_id):
+        raise ValueError("Configure TELEGRAM_BOT_TOKEN e TELEGRAM_TEST_CHAT_ID (ID numérico do canal privado de teste)")
+    payload = json.dumps({"chat_id": chat_id, "text": message, "disable_web_page_preview": True}).encode("utf-8")
+    req = urllib.request.Request("https://api.telegram.org/bot"+token+"/sendMessage",
+                                 data=payload, headers={"Content-Type":"application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=12) as response:
+        result = json.load(response)
+    if not result.get("ok"):
+        raise ValueError("Telegram não confirmou o envio")
+    return result["result"]["message_id"]
+
 def stats():
     # SQLite URI mode=ro garante que o painel nunca altere o banco.
     con = sqlite3.connect("file:" + DB + "?mode=ro", uri=True, timeout=2)
@@ -196,6 +212,36 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, sqlite3.Error):
                 self.respond(400, "Não foi possível gerar a descrição")
             return
+        if self.path.startswith("/publish-test?"):
+            if not authenticated(self.headers.get("Cookie")):
+                self.login()
+                return
+            raw_id = parse_qs(urlsplit(self.path).query).get("id", [""])[0]
+            if not raw_id.isdecimal():
+                self.respond(400, "ID inválido")
+                return
+            try:
+                con = manual_db()
+                try:
+                    offer = con.execute("SELECT title,affiliate_url,price_cents,status FROM manual_offers WHERE id=?", (int(raw_id),)).fetchone()
+                finally:
+                    con.close()
+            except sqlite3.Error:
+                self.respond(503, "Banco indisponível")
+                return
+            if not offer or offer[3] != "approved":
+                self.respond(409, "A oferta precisa estar aprovada")
+                return
+            message = offer_description(*offer[:3])
+            body = ("<main class='wrap'><h1>Confirmar publicação no canal de TESTE</h1>"
+                    "<p class='notice'>Somente o canal definido em TELEGRAM_TEST_CHAT_ID receberá esta mensagem. Confira o destino no Easypanel.</p>"
+                    "<div class='card'><textarea readonly rows='12' style='width:100%;background:#0b1422;color:white;padding:14px;border:1px solid #40516a;border-radius:10px;font:inherit'>"+
+                    esc(message)+"</textarea><form method='post' action='/publish-test'>"
+                    "<input type='hidden' name='offer_id' value='"+esc(raw_id)+"'>"
+                    "<button type='submit' name='confirm' value='yes'>Confirmar envio ao Telegram TESTE</button>"
+                    "</form><p><a href='/'>Cancelar e voltar</a></p></div></main>")
+            self.respond(200, layout(body))
+            return
         if self.path != "/":
             self.respond(404, "Página não encontrada")
             return
@@ -221,7 +267,7 @@ class Handler(BaseHTTPRequestHandler):
                  "<input type='hidden' name='offer_id' value='"+esc(oid)+"'>"
                  "<button type='submit' name='decision' value='approved'>Aprovar</button>"
                  "<button class='reject' type='submit' name='decision' value='rejected'>Rejeitar</button>"
-                 "</form>" if st == "pending_review" else "<span class='muted'>Revisado</span>")+
+                 "</form>" if st == "pending_review" else ("<a href='/publish-test?id="+esc(oid)+"'>Publicar no TESTE</a>" if st == "approved" else "<span class='muted'>Rejeitado</span>"))+
                 "</td></tr>"
                 for oid,t,u,p,c,sub,st in manual)
         except sqlite3.Error:
@@ -253,11 +299,11 @@ class Handler(BaseHTTPRequestHandler):
                 "<section class='card section'><h2>Últimas oportunidades</h2><div class='scroll'>"
                 "<table><thead><tr><th>Produto</th><th>Preço</th><th>Anterior</th><th>Status</th><th>Data (UTC)</th></tr></thead>"
                 "<tbody>" + rows + "</tbody></table></div></section>"
-                "<section class='section notice'>🔒 Cadastro manual. Nenhuma oferta é publicada automaticamente.</section></main>")
+                "<section class='section notice'>🔒 Publicação somente manual e confirmada no canal de TESTE. Nenhum envio automático.</section></main>")
         self.respond(200, layout(body))
 
     def do_POST(self):
-        if self.path not in ("/login","/logout","/offers","/review"):
+        if self.path not in ("/login","/logout","/offers","/review","/publish-test"):
             self.respond(404, "Página não encontrada")
             return
         # Compare com a origem HTTPS pública configurada, não com o Host interno do proxy.
@@ -298,6 +344,43 @@ class Handler(BaseHTTPRequestHandler):
             self.redirect("/", COOKIE_NAME + "=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict")
             return
 
+        if self.path == "/publish-test":
+            if not authenticated(self.headers.get("Cookie")):
+                self.respond(401, "Faça login")
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 1 <= length <= 256:
+                    raise ValueError("Requisição inválida")
+                form = parse_qs(self.rfile.read(length).decode("utf-8"))
+                raw_id = form.get("offer_id", [""])[0]
+                if not raw_id.isdecimal() or form.get("confirm", [""])[0] != "yes":
+                    raise ValueError("Confirmação inválida")
+                con = manual_db()
+                try:
+                    con.execute("""CREATE TABLE IF NOT EXISTS test_publications (
+                        offer_id INTEGER PRIMARY KEY, telegram_message_id INTEGER NOT NULL,
+                        sent_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                    )""")
+                    con.commit()
+                    offer = con.execute("SELECT title,affiliate_url,price_cents FROM manual_offers WHERE id=? AND status='approved'", (int(raw_id),)).fetchone()
+                    already = con.execute("SELECT 1 FROM test_publications WHERE offer_id=?", (int(raw_id),)).fetchone()
+                    if not offer or already:
+                        self.respond(409, "Oferta não aprovada ou já enviada ao canal de teste")
+                        return
+                    message_id = send_test_message(offer_description(*offer))
+                    con.execute("INSERT INTO test_publications (offer_id,telegram_message_id) VALUES (?,?)", (int(raw_id), message_id))
+                    con.commit()
+                finally:
+                    con.close()
+            except (ValueError, UnicodeDecodeError) as exc:
+                self.respond(400, layout("<main class='wrap'><p>"+esc(str(exc))+"</p><a href='/'>Voltar</a></main>"))
+                return
+            except (sqlite3.Error, urllib.error.URLError, TimeoutError):
+                self.respond(503, "Não foi possível confirmar o envio. Verifique o canal antes de tentar novamente.")
+                return
+            self.respond(200, layout("<main class='wrap'><h1>Mensagem enviada ao canal de teste</h1><p><a href='/'>Voltar ao Radar</a></p></main>"))
+            return
         if self.path == "/review":
             if not authenticated(self.headers.get("Cookie")):
                 self.respond(401, "Faça login novamente")
