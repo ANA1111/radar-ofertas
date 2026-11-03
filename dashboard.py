@@ -4,6 +4,9 @@ import hashlib
 import hmac
 import html
 import json
+import re
+from decimal import Decimal, InvalidOperation
+from urllib.parse import urlsplit
 import os
 import secrets
 import sqlite3
@@ -71,6 +74,33 @@ def authenticated(cookie_header):
         return int(expiry) > time.time() and hmac.compare_digest(sig, signature(payload))
     except (KeyError, ValueError):
         return False
+
+
+def manual_db():
+    con = sqlite3.connect(DB, timeout=5)
+    con.execute("""CREATE TABLE IF NOT EXISTS manual_offers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL, affiliate_url TEXT NOT NULL UNIQUE,
+        price_cents INTEGER NOT NULL, commission_percent TEXT,
+        sub_id TEXT, status TEXT NOT NULL DEFAULT 'pending_review',
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    )""")
+    con.commit()
+    return con
+
+def manual_list():
+    con = manual_db()
+    try:
+        return con.execute("SELECT title,affiliate_url,price_cents,commission_percent,sub_id,status FROM manual_offers ORDER BY id DESC LIMIT 50").fetchall()
+    finally:
+        con.close()
+
+def parse_price(raw):
+    raw = raw.strip().replace("R$", "").replace(" ", "").replace(",", ".")
+    value = Decimal(raw)
+    if not value.is_finite() or value <= 0 or value > 9999999 or value.as_tuple().exponent < -2:
+        raise ValueError("Preço inválido")
+    return int(value * 100)
 
 def stats():
     # SQLite URI mode=ro garante que o painel nunca altere o banco.
@@ -144,6 +174,24 @@ class Handler(BaseHTTPRequestHandler):
             products = history = pending = candidates = 0
             recent = []
             notice = "<p class='notice'>Banco indisponível. Verifique o volume de leitura no Easypanel.</p>"
+
+        try:
+            manual = manual_list()
+            manual_rows = "".join("<tr><td>"+esc(t)+"</td><td>"+money(p)+"</td><td>"+esc(c or "—")+"</td><td>"+esc(sub or "—")+"</td><td>"+esc(st)+"</td><td><a target='_blank' rel='noopener noreferrer' href='"+esc(u)+"'>Abrir</a></td></tr>" for t,u,p,c,sub,st in manual)
+        except sqlite3.Error:
+            manual_rows = "<tr><td colspan='6'>Banco manual indisponível. Verifique o volume /data.</td></tr>"
+        if not manual_rows:
+            manual_rows = "<tr><td colspan='6'>Nenhuma oferta manual cadastrada.</td></tr>"
+        form_html = """<section class='card section'><h2>Cadastrar oferta Shopee</h2>
+        <p class='muted'>Cadastro manual, sem publicação automática.</p>
+        <form method='post' action='/offers'>
+        <label>Produto<input name='title' maxlength='160' required></label>
+        <label>Link de afiliada<input name='affiliate_url' type='url' maxlength='1000' required></label>
+        <label>Preço observado (R$)<input name='price' placeholder='69,90' required></label>
+        <label>Comissão exibida (%)<input name='commission' placeholder='28'></label>
+        <label>Sub ID<input name='sub_id' maxlength='60' placeholder='radarofertas'></label>
+        <button type='submit'>Salvar para revisão</button></form></section>"""
+        manual_html = "<section class='card section'><h2>Ofertas cadastradas manualmente</h2><div class='scroll'><table><thead><tr><th>Produto</th><th>Preço</th><th>Comissão %</th><th>Sub ID</th><th>Status</th><th>Link</th></tr></thead><tbody>"+manual_rows+"</tbody></table></div></section>"
         metrics = [("Produtos monitorados",products),("Leituras registradas",history),("Aguardando revisão",pending),("Oportunidades detectadas",candidates)]
         cards = "".join("<div class='card'><div class='muted'>" + esc(k) + "</div><div class='kpi'>" + esc(v) + "</div></div>" for k,v in metrics)
         rows = "".join("<tr><td>" + esc(title) + "</td><td>" + money(price) + "</td><td>" +
@@ -155,15 +203,15 @@ class Handler(BaseHTTPRequestHandler):
                 "<div style='display:flex;align-items:center;gap:10px'><span class='pill'>● Modo de testes</span>"
                 "<form method='post' action='/logout'><button class='logout'>Sair</button></form></div></header>"
                 "<h1>Visão geral</h1><p class='muted'>Acompanhamento dos dados registrados pelo monitor. Atualize a página para consultar novamente.</p>"
-                + notice + "<div class='grid'>" + cards + "</div>"
+                + notice + "<div class='grid'>" + cards + "</div>" + form_html + manual_html
                 "<section class='card section'><h2>Últimas oportunidades</h2><div class='scroll'>"
                 "<table><thead><tr><th>Produto</th><th>Preço</th><th>Anterior</th><th>Status</th><th>Data (UTC)</th></tr></thead>"
                 "<tbody>" + rows + "</tbody></table></div></section>"
-                "<section class='section notice'>🔒 Painel somente leitura. Nenhum botão envia ofertas ou executa automações.</section></main>")
+                "<section class='section notice'>🔒 Cadastro manual. Nenhuma oferta é publicada automaticamente.</section></main>")
         self.respond(200, layout(body))
 
     def do_POST(self):
-        if self.path not in ("/login","/logout"):
+        if self.path not in ("/login","/logout","/offers"):
             self.respond(404, "Página não encontrada")
             return
         # Compare com a origem HTTPS pública configurada, não com o Host interno do proxy.
@@ -202,6 +250,44 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/logout":
             self.redirect("/", COOKIE_NAME + "=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict")
+            return
+
+        if self.path == "/offers":
+            if not authenticated(self.headers.get("Cookie")):
+                self.respond(401, "Faça login novamente")
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length < 1 or length > 4096:
+                    raise ValueError("Requisição inválida")
+                form = parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
+                get = lambda key: form.get(key, [""])[0].strip()
+                title, url = get("title"), get("affiliate_url")
+                price = parse_price(get("price"))
+                commission, sub_id = get("commission"), get("sub_id")
+                parsed = urlsplit(url)
+                if not 3 <= len(title) <= 160 or len(url) > 1000 or parsed.scheme != "https" or parsed.hostname not in ("s.shopee.com.br","shopee.com.br","www.shopee.com.br") or not parsed.path.strip("/") or parsed.username or parsed.password:
+                    raise ValueError("Produto ou link Shopee inválido")
+                if commission:
+                    rate = Decimal(commission.replace(",", "."))
+                    if not rate.is_finite() or rate < 0 or rate > 100 or len(commission) > 12:
+                        raise ValueError("Comissão inválida")
+                    commission = str(rate)
+                if not re.fullmatch(r"[A-Za-z0-9_-]{0,60}", sub_id):
+                    raise ValueError("Sub ID inválido")
+                con = manual_db()
+                try:
+                    con.execute("INSERT INTO manual_offers (title,affiliate_url,price_cents,commission_percent,sub_id) VALUES (?,?,?,?,?)", (title,url,price,commission,sub_id))
+                    con.commit()
+                finally:
+                    con.close()
+            except (ValueError, InvalidOperation, UnicodeDecodeError, sqlite3.IntegrityError) as exc:
+                self.respond(400, layout("<main class='wrap'><h2>Não foi possível salvar</h2><p>"+esc(str(exc))+"</p><a href='/'>Voltar</a></main>"))
+                return
+            except sqlite3.Error:
+                self.respond(503, "Banco indisponível para escrita. Verifique /data")
+                return
+            self.redirect("/")
             return
         ip = self.client_address[0]
         now = time.monotonic()
