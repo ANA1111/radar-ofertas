@@ -1,0 +1,8 @@
+FROM python:3.12-slim
+WORKDIR /app
+COPY dashboard.py /app/dashboard.py
+RUN useradd --create-home --uid 10001 radar && chmod 644 /app/dashboard.py
+USER radar
+ENV PORT=8080 RADAR_DB=/data/ofertas.sqlite3
+EXPOSE 8080
+CMD ["python","-u","dashboard.py"]
