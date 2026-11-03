@@ -203,7 +203,7 @@ class Handler(BaseHTTPRequestHandler):
                 "<div style='display:flex;align-items:center;gap:10px'><span class='pill'>● Modo de testes</span>"
                 "<form method='post' action='/logout'><button class='logout'>Sair</button></form></div></header>"
                 "<h1>Visão geral</h1><p class='muted'>Acompanhamento dos dados registrados pelo monitor. Atualize a página para consultar novamente.</p>"
-                + notice + "<div class='grid'>" + cards + "</div>" + form_html + manual_html
+                + notice + "<div class='grid'>" + cards + "</div>" + form_html + manual_html +
                 "<section class='card section'><h2>Últimas oportunidades</h2><div class='scroll'>"
                 "<table><thead><tr><th>Produto</th><th>Preço</th><th>Anterior</th><th>Status</th><th>Data (UTC)</th></tr></thead>"
                 "<tbody>" + rows + "</tbody></table></div></section>"
