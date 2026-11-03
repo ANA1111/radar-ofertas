@@ -166,14 +166,21 @@ class Handler(BaseHTTPRequestHandler):
         if self.path not in ("/login","/logout"):
             self.respond(404, "Página não encontrada")
             return
-        # Bloqueia requisições de origem cruzada; proxy deve preservar Host.
-        origin = self.headers.get("Origin")
-        host = self.headers.get("Host", "")
-        # PUBLIC_ORIGIN define a origem externa confiável atrás do proxy HTTPS.
-        # Nunca confiar em X-Forwarded-Host fornecido por clientes.
-        public_origin = os.environ.get("DASHBOARD_PUBLIC_ORIGIN", "").rstrip("/")
-        expected_origin = public_origin or ("https://" + host)
-        if origin and origin != expected_origin:
+        # Compare com a origem HTTPS pública configurada, não com o Host interno do proxy.
+        # Easypanel pode preservar um Host interno diferente do domínio visto pelo navegador.
+        from urllib.parse import urlsplit
+        origin = (self.headers.get("Origin") or "").strip()
+        public_origin = os.environ.get("DASHBOARD_PUBLIC_ORIGIN", "").strip().strip('"').strip("'").rstrip("/")
+        if not public_origin:
+            self.respond(503, "Configure DASHBOARD_PUBLIC_ORIGIN no Easypanel")
+            return
+        expected = urlsplit(public_origin)
+        actual = urlsplit(origin)
+        if (expected.scheme != "https" or expected.hostname != "ofertas.gestoncuid.tech"
+                or actual.scheme != "https" or actual.netloc.lower() != expected.netloc.lower()):
+            # Loga apenas informações públicas de diagnóstico, nunca senha/cookie.
+            print("ORIGIN_CHECK_REJECTED", "origin="+repr(origin),
+                  "configured="+repr(public_origin), flush=True)
             self.respond(403, "Origem não permitida")
             return
         if self.path == "/logout":
