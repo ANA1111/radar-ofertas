@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 WORKDIR /app
-COPY app.py monitor.py shopee_import.py offer_workflow.py web_panel.py /app/
+COPY app.py monitor.py shopee_import.py offer_workflow.py marketplaces.py web_panel.py /app/
 COPY samples/ /app/samples/
 COPY assets/ /app/assets/
 RUN useradd --create-home --uid 10001 radar \
