@@ -169,7 +169,7 @@ class Panel(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options","DENY")
         self.send_header("X-Content-Type-Options","nosniff")
         self.send_header("Referrer-Policy","no-referrer")
-        self.send_header("Content-Security-Policy","default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
+        self.send_header("Content-Security-Policy","default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
         for k,v in (more or {}).items():
             self.send_header(k,v)
         self.end_headers()
@@ -189,6 +189,18 @@ class Panel(BaseHTTPRequestHandler):
         return '<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Radar de Ofertas</title><style>'+CSS+'</style></head><body><header><strong>📡 RADAR DE OFERTAS 2.0</strong>'+exit_form+'</header>'+body+'</body></html>'
     def do_GET(self):
         path=urlparse(self.path).path
+        if path=="/assets/cover.svg":
+            cover=Path(__file__).parent/"assets"/"cover.svg"
+            if not cover.is_file():
+                return self.respond("Capa indisponível",404)
+            self.send_response(200)
+            self.send_header("Content-Type","image/svg+xml")
+            self.send_header("Cache-Control","public, max-age=3600")
+            self.send_header("X-Content-Type-Options","nosniff")
+            self.send_header("Content-Security-Policy","default-src 'none'; style-src 'unsafe-inline'; sandbox")
+            self.end_headers()
+            self.wfile.write(cover.read_bytes())
+            return
         if path=="/healthz":
             return self.respond("ok")
         if path.startswith("/r/"):
@@ -237,7 +249,7 @@ class Panel(BaseHTTPRequestHandler):
         jobs={r["candidate_id"]:r["state"] for r in c.execute("SELECT candidate_id,state FROM jobs")}
         c.close()
         blocks=''.join(f'<div class="card metric"><small>{label}</small><b>{counts[key]}</b></div>' for key,label in (("pending_review","Para aprovar"),("approved","Aprovadas"),("published","Publicadas"),("clicks","Cliques medidos")))
-        body='<main><small>Central de gestão</small><h1>Encontre, aprove e publique.</h1><div class="grid">'+blocks+'</div>'
+        body='<main><img src="/assets/cover.svg" alt="Radar de Ofertas: identidade visual" style="display:block;width:100%;border-radius:18px;margin-bottom:20px"><small>Central de gestão</small><h1>Encontre, aprove e publique.</h1><div class="grid">'+blocks+'</div>'
         body+=('<p class="notice">Telegram: '+('habilitado' if SEND and TOKEN and CHAT else 'desabilitado (modo seguro)')+'. O sistema lê arquivos CSV autorizados de /app/data/inbox a cada '+str(INTERVAL)+' segundos. Nenhuma descoberta online não autorizada.</p>')
         body+='<div class="card"><h2>Fila de ofertas</h2><p class="muted">O campo de data usa UTC; vazio = próxima verificação. Preço anterior = observação anterior no seu banco, não preço original do lojista.</p><div class="scroll"><table><tr><th>Produto</th><th>Preço / queda</th><th>Status</th><th>Operações</th></tr>'
         for r in rows:
