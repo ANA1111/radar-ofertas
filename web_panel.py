@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlparse
 
 from monitor import SCHEMA, import_csv
 from offer_workflow import message_for
+from marketplaces import connector_for, ConnectorError
 
 DATA = Path(os.getenv("DATA_DIR", "/app/data"))
 DB = DATA / "offers.sqlite3"
@@ -60,6 +61,7 @@ def db():
     CREATE TABLE IF NOT EXISTS imported_files(sha TEXT PRIMARY KEY,name TEXT NOT NULL,at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,at TEXT NOT NULL,candidate_id INTEGER,action TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS clicks(id INTEGER PRIMARY KEY,at TEXT NOT NULL,candidate_id INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS affiliate_links(candidate_id INTEGER NOT NULL,channel TEXT NOT NULL,url TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(candidate_id,channel));
     """)
     return c
 
@@ -83,6 +85,38 @@ def esc(value):
 def log(c, cid, action):
     c.execute("INSERT INTO audit(at,candidate_id,action) VALUES(?,?,?)", (stamp(),cid,action))
 
+def saved_link(c, cid):
+    r=c.execute("SELECT url FROM affiliate_links WHERE candidate_id=? AND channel='telegram'",(cid,)).fetchone()
+    return r["url"] if r else None
+
+def generate_link(cid):
+    """Uses only the signed Shopee API and stores the result; never publishes."""
+    with MUTEX:
+        c=db()
+        try:
+            r=c.execute("SELECT rowid AS id,* FROM candidates WHERE rowid=?",(cid,)).fetchone()
+            if not r or r["source"]!="SHOPEE" or r["status"] not in ("pending_review","approved"):
+                raise ValueError("Oferta indisponível para conversão")
+            cached=saved_link(c,cid)
+            if cached: return cached
+            origin=r["url"]
+        finally:
+            c.close()
+    link=connector_for("SHOPEE").convert(origin,"telegram")
+    with MUTEX:
+        c=db()
+        try:
+            c.execute("INSERT OR IGNORE INTO affiliate_links VALUES(?,?,?,?)",(cid,"telegram",link,stamp()))
+            log(c,cid,"affiliate_generated")
+            c.commit()
+            return saved_link(c,cid)
+        finally:
+            c.close()
+
+def delivered_text(row, affiliate_url):
+    # message_for validates the source and the actual observed price drop.
+    return message_for(row).replace(row["url"],affiliate_url)
+
 def deliver(cid):
     """Fail closed on ambiguous Telegram errors: never retry automatically."""
     with MUTEX:
@@ -92,7 +126,10 @@ def deliver(cid):
             j = c.execute("SELECT * FROM jobs WHERE candidate_id=?", (cid,)).fetchone()
             if not r or r["status"] != "approved" or not j or j["state"] != "queued":
                 return
-            text = message_for(r)
+            link=saved_link(c,cid)
+            if not link:
+                return
+            text = delivered_text(r,link)
             if not SEND or not TOKEN or not CHAT:
                 return
             c.execute("UPDATE jobs SET state='sending' WHERE candidate_id=?", (cid,))
@@ -149,6 +186,21 @@ def worker():
                     working.rename(file.with_suffix(".processed"))
                 except Exception:
                     working.rename(file.with_suffix(".failed"))
+            # Convert small batches automatically, if the official affiliate API is enabled.
+            if os.getenv("AUTO_GENERATE_LINKS","false").lower()=="true":
+                c=db()
+                pending=[r["id"] for r in c.execute("""
+                    SELECT c.rowid AS id FROM candidates c LEFT JOIN affiliate_links a
+                    ON a.candidate_id=c.rowid AND a.channel='telegram'
+                    WHERE c.source='SHOPEE' AND c.status IN ('pending_review','approved')
+                    AND a.candidate_id IS NULL ORDER BY c.observed_at DESC LIMIT 5
+                """)]
+                c.close()
+                for cid in pending:
+                    try: generate_link(cid)
+                    except (ConnectorError,ValueError) as e:
+                        print("Link conversion not available:",str(e),flush=True)
+                        break
             if SEND:
                 c=db()
                 due=[r["candidate_id"] for r in c.execute("SELECT candidate_id FROM jobs WHERE state='queued' AND scheduled_at<=? LIMIT 8",(stamp(),))]
@@ -251,12 +303,15 @@ class Panel(BaseHTTPRequestHandler):
         blocks=''.join(f'<div class="card metric"><small>{label}</small><b>{counts[key]}</b></div>' for key,label in (("pending_review","Para aprovar"),("approved","Aprovadas"),("published","Publicadas"),("clicks","Cliques medidos")))
         body='<main><img src="/assets/cover.svg" alt="Radar de Ofertas: identidade visual" style="display:block;width:100%;border-radius:18px;margin-bottom:20px"><small>Central de gestão</small><h1>Encontre, aprove e publique.</h1><div class="grid">'+blocks+'</div>'
         body+=('<p class="notice">Telegram: '+('habilitado' if SEND and TOKEN and CHAT else 'desabilitado (modo seguro)')+'. O sistema lê arquivos CSV autorizados de /app/data/inbox a cada '+str(INTERVAL)+' segundos. Nenhuma descoberta online não autorizada.</p>')
+        body+='<div class="card"><h2>Automação gratuita</h2><p>A cada '+str(INTERVAL)+' segundos: importa novas observações de CSV autorizado, tenta gerar links de afiliado Shopee se a API estiver habilitada e envia ao Telegram somente ofertas aprovadas e agendadas. WhatsApp e outros marketplaces permanecem desligados.</p></div>'
         body+='<div class="card"><h2>Fila de ofertas</h2><p class="muted">O campo de data usa UTC; vazio = próxima verificação. Preço anterior = observação anterior no seu banco, não preço original do lojista.</p><div class="scroll"><table><tr><th>Produto</th><th>Preço / queda</th><th>Status</th><th>Operações</th></tr>'
         for r in rows:
             cid=r["id"]
             pct=round((r["previous_cents"]-r["price_cents"])*100/r["previous_cents"]) if r["previous_cents"] else 0
             hidden=f'<input type="hidden" name="csrf" value="{sign("csrf:"+t)}"><input type="hidden" name="id" value="{cid}">'
             actions=f'<a href="/preview/{cid}" class="button secondary">Prévia</a> '
+            if r["source"]=="SHOPEE" and r["status"] in ("pending_review","approved"):
+                actions+=f'<form method="post" action="/action">{hidden}<button name="action" value="generate_link" class="secondary">Gerar afiliado</button></form>'
             if r["status"]=="pending_review":
                 actions+=f'<form action="/action" method="post">{hidden}<button name="action" value="approve">Aprovar</button> <button name="action" value="reject" class="danger">Rejeitar</button></form>'
             elif r["status"]=="approved" and cid not in jobs:
@@ -302,8 +357,14 @@ class Panel(BaseHTTPRequestHandler):
         try:
             cid=int(form.get("id","0"))
             action=form.get("action")
-            if cid<1 or action not in ("approve","reject","queue"):
+            if cid<1 or action not in ("approve","reject","queue","generate_link"):
                 raise ValueError("Parâmetros inválidos")
+            if action=="generate_link":
+                try:
+                    generate_link(cid)
+                    return self.redirect("/")
+                except (ConnectorError,ValueError) as exc:
+                    return self.respond(self.layout('<main><h2>Link não gerado</h2><p>'+esc(exc)+'</p><a href="/">Voltar</a></main>',t),400)
             with MUTEX:
                 c=db()
                 r=c.execute("SELECT rowid AS id,* FROM candidates WHERE rowid=?",(cid,)).fetchone()
@@ -319,6 +380,8 @@ class Panel(BaseHTTPRequestHandler):
                     if r["status"]!="approved" or c.execute("SELECT 1 FROM jobs WHERE candidate_id=?",(cid,)).fetchone():
                         raise ValueError("Oferta não elegível")
                     message_for(r)
+                    if not saved_link(c,cid):
+                        raise ValueError("Gere o link de afiliado antes de agendar o Telegram")
                     raw=form.get("schedule","").strip()
                     when=dt.datetime.fromisoformat(raw).replace(tzinfo=dt.timezone.utc) if raw else dt.datetime.now(dt.timezone.utc)
                     if when>dt.datetime.now(dt.timezone.utc)+dt.timedelta(days=30):
