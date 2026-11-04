@@ -1,3 +1,24 @@
+# Radar de Ofertas — Telegram e Shopee (sem novos custos)
+
+**Foco atual:** apenas Telegram e automação de ofertas da Shopee. WhatsApp, Amazon, Mercado Livre e TikTok Shop permanecem desativados. O sistema usa sua VPS existente; não há serviços pagos adicionais no código, mas a VPS continua tendo seu custo atual.
+
+## Fluxo atualizado
+
+1. A rotina verifica a pasta autorizada `/app/data/inbox` periodicamente e importa novos CSVs para o histórico de preços. **Ainda não existe descoberta automática na Shopee**; ela depende de uma fonte autorizada alimentando a pasta.
+2. O sistema cria candidatos quando uma queda de preço é confirmada contra a observação anterior.
+3. Com credenciais válidas da API Shopee Affiliate, pode converter os links do candidato para afiliados com `AUTO_GENERATE_LINKS=true`, ou você clica em **Gerar afiliado**. Sem credenciais válidas a conversão não é possível; não se fabricam links.
+4. Você confere o produto e **aprova manualmente**.
+5. Depois de criado um link de afiliado, pode **agendar / enviar** a oferta. A rotina publica somente os candidatos aprovados e agendados, quando `ENABLE_TELEGRAM_SEND=true`.
+6. Falhas ambíguas no Telegram ficam com status `uncertain`, exigindo revisão manual; o sistema não tenta reenviar automaticamente.
+
+**Variáveis adicionais no Easypanel:** `SHOPEE_APP_ID`, `SHOPEE_APP_SECRET` e `AUTO_GENERATE_LINKS=false` (altere para `true` depois de obter credenciais válidas e testar). `BOT_TOKEN` e `TELEGRAM_CHAT_ID` são necessários para envio. Nunca coloque segredos no GitHub.
+
+**Teste local gratuito e offline:** `python -m unittest discover -s tests -v`. O código implementa a chamada de conversão oficial, mas seu sucesso dependerá de permissões e credenciais da Shopee. Não foi feito teste real de API ou de envio pelo Telegram nesta etapa.
+
+**Custo zero adicional não significa integração liberada:** é necessário verificar acesso gratuito à API da sua conta de afiliado e manter o uso dentro dos limites da plataforma.
+
+---
+
 # Radar de Ofertas 2.0
 
 Painel privado de triagem de ofertas, monitoramento por importação recorrente de CSV autorizado e publicação controlada no Telegram.
