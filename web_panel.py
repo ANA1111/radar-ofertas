@@ -207,7 +207,7 @@ class Panel(BaseHTTPRequestHandler):
             return self.click(path)
         t=self.user()
         if not t:
-            return self.respond(self.layout('<main><section class="card" style="max-width:410px;margin:10vh auto"><h1>Entrar</h1><form method="post" action="/login"><p>E-mail</p><input name="email" type="email" required autocomplete="username"><p>Senha</p><input name="password" type="password" required autocomplete="current-password"><p><button>Acessar</button></p></form></section></main>'))
+            return self.respond(self.layout('<main><section class="card" style="max-width:550px;margin:6vh auto"><img src="/assets/cover.svg" alt="Radar de Ofertas" style="display:block;width:100%;border-radius:12px"><h1>Acesso administrativo</h1><form method="post" action="/login"><p>E-mail</p><input name="email" type="email" required autocomplete="username"><p>Senha</p><input name="password" type="password" required autocomplete="current-password"><p><button>Acessar</button></p></form></section></main>'))
         if path=="/":
             return self.home(t)
         if path.startswith("/preview/"):
