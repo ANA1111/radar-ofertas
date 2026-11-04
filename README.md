@@ -63,3 +63,18 @@ O endereço do exemplo é ilustrativo; substitua pelo seu link real e autorizado
 Esta é uma primeira versão para **um operador** e **um processo de aplicação**. É recomendável adicionar rate limiting persistente, backup automatizado do SQLite, restrição de IP no proxy, controle de múltiplos usuários e testes integrados antes de escala. A autenticação usa credenciais por ambiente; o segredo de sessão deve ser fixo e protegido. Não altere APP_SECRET sem planejar invalidar sessões.
 
 O painel não tem integração oficial com APIs da Shopee nesta versão. Para descoberta e dados de vendas reais, conecte somente fonte/API autorizada e verifique termos da plataforma.
+
+
+## Identidade visual e histórico de commits
+
+A capa vetorial do Radar de Ofertas fica em `assets/cover.svg`, é carregada na tela de login e no painel após autenticação. Ela não depende de serviços externos nem incorpora scripts. Os commits de alteração foram separados por intenção: `feat(brand)`, `feat(ui)`, `fix(deploy)` e `feat(auth-ui)`. A partir daqui, cada alteração deverá ter commit com escopo e descrição claros.
+
+## Segurança de alterações
+
+- Nunca inclua credenciais em arquivos versionados nem na capa.
+- Mantenha `ENABLE_TELEGRAM_SEND=false` até passar por teste de integração e validação do administrador.
+- Use HTTPS no proxy reverso e mantenha `COOKIE_SECURE=true`.
+- Configure volume persistente e backup externo de `/app/data`.
+- Não misture alterações de design com ativação de disparos, mudanças de banco ou integrações sem testes.
+- Revise a configuração do Easypanel após cada deploy; atualizar o repositório **não significa** que a VPS foi atualizada automaticamente.
+- O conector Shopee inicial em `marketplaces.py` requer credenciais oficiais e ainda não está conectado ao fluxo completo do painel.
