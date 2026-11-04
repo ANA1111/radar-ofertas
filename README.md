@@ -99,3 +99,17 @@ A capa vetorial do Radar de Ofertas fica em `assets/cover.svg`, é carregada na 
 - Não misture alterações de design com ativação de disparos, mudanças de banco ou integrações sem testes.
 - Revise a configuração do Easypanel após cada deploy; atualizar o repositório **não significa** que a VPS foi atualizada automaticamente.
 - O conector Shopee inicial em `marketplaces.py` requer credenciais oficiais e ainda não está conectado ao fluxo completo do painel.
+
+## Diagnóstico: Easypanel continua mostrando painel antigo
+
+Em 2026-11-04 o build legado `Dockerfile.dashboard` foi atualizado para iniciar `web_panel.py` (mesma aplicação do `Dockerfile`). Um novo build desse commit ou mais recente não deve exibir o antigo formulário "Cadastrar oferta Shopee".
+
+1. Em **Source**, confirme o repositório `ANA1111/radar-ofertas` e a branch `main`.
+2. Em **Build**, use `Dockerfile.dashboard` ou `Dockerfile`; ambos agora iniciam `web_panel.py`.
+3. Configure antes do deploy: `APP_SECRET` (32+ caracteres), `ADMIN_EMAIL`, `ADMIN_PASSWORD` (14+ caracteres), `COOKIE_SECURE=true`, e mantenha `ENABLE_TELEGRAM_SEND=false`.
+4. **Faça backup dos bancos e volumes antes de trocar a imagem.** O painel anterior usava `RADAR_DB=/data/ofertas.sqlite3`; o novo build legado usa `DATA_DIR=/data` e cria `/data/offers.sqlite3`. O novo banco NÃO importa automaticamente o banco antigo. Não apague `/data/ofertas.sqlite3` nem volumes associados.
+5. Na aba de implantações, execute novo build e verifique o commit efetivamente construído, os logs da aplicação e a saúde do container. Se a página antiga continuar, verifique qual serviço é destino da rota de domínio no Easypanel.
+6. O serviço novo exige suas próprias credenciais de login; `DASHBOARD_PASSWORD_HASH` e `DASHBOARD_SESSION_SECRET` do painel anterior não substituem as variáveis novas. Não compartilhe prints de segredos.
+7. Se a nova tela aparecer sem os registros antigos, **não exclua nada**: será necessária uma migração planejada com cópia de segurança.
+
+A publicação no Telegram permanece desativada por padrão; não habilite antes de confirmar o canal de testes e testar aprovações.
